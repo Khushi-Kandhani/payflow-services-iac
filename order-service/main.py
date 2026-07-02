@@ -3,10 +3,31 @@ import time
 import json
 import boto3
 import psycopg2
+import psycopg2.extras
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 app = FastAPI()
+
+# CORS - allows the React frontend (different origin/port) to call this API.
+# Reads a comma-separated allow-list from CORS_ALLOWED_ORIGINS (set this to your
+# real frontend URL(s) in any non-local environment). Defaults cover the two
+# ways the frontend is served locally: `npm run dev` (Vite, :5173) and the
+# built image served by nginx via docker-compose (:3000).
+_default_origins = "http://localhost:5173,http://localhost:3000"
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "payflow_db")
@@ -38,6 +59,26 @@ def get_sqs_client():
 @app.on_event("startup")
 def startup_event():
     global QUEUE_URL
+
+    # NOTE: nothing in this repo previously created the `orders` table -
+    # not here, not in terraform, not in a migration. Adding it here so the
+    # service is actually runnable out of the box.
+    print("Order Service: Ensuring database schema exists...")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id SERIAL PRIMARY KEY,
+            product_name VARCHAR(100) NOT NULL,
+            amount DECIMAL NOT NULL,
+            status VARCHAR(20) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
+
     print("Order Service: Connecting to LocalStack SQS...")
     sqs = get_sqs_client()
     
@@ -72,9 +113,11 @@ def create_order(order: OrderCreate):
         
         # 2. Package the data up as an event message
         message_body = {
+            "event_type": "order_created",
             "order_id": order_id,
             "product_name": order.product_name,
-            "amount": order.amount
+            "amount": order.amount,
+            "status": status,
         }
         
         # 3. Publish the event directly to our AWS SQS Queue
@@ -98,6 +141,44 @@ def create_order(order: OrderCreate):
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# These two GET endpoints didn't exist before - there was no way for any
+# client (frontend or otherwise) to read order data back out, only create it.
+@app.get("/orders")
+def list_orders(limit: int = 50):
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cursor.execute(
+            "SELECT id, product_name, amount, status, created_at "
+            "FROM orders ORDER BY created_at DESC LIMIT %s;",
+            (limit,)
+        )
+        rows = cursor.fetchall()
+        return rows
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.get("/orders/{order_id}")
+def get_order(order_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cursor.execute(
+            "SELECT id, product_name, amount, status, created_at "
+            "FROM orders WHERE id = %s;",
+            (order_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Order not found")
+        return row
     finally:
         cursor.close()
         conn.close()
