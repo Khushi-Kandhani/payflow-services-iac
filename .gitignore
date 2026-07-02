@@ -1,0 +1,34 @@
+# LocalStack runtime state (recreated automatically by docker-compose)
+localstack/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+terraform/.terraform.lock.hcl.bak
+terraform/crash.log
+
+# Env / secrets
+.env
+*.pem
+*.key
+*.crt
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
