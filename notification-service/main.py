@@ -7,8 +7,8 @@ AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 QUEUE_NAME = "order-events"
 
+
 def get_sqs_client():
-    # Connect to LocalStack SQS
     return boto3.client(
         "sqs",
         endpoint_url=AWS_ENDPOINT_URL,
@@ -17,50 +17,67 @@ def get_sqs_client():
         aws_secret_access_key="mock"
     )
 
+
+def get_queue_url(sqs):
+    while True:
+        try:
+            response = sqs.get_queue_url(QueueName=QUEUE_NAME)
+            return response["QueueUrl"]
+        except Exception as exc:
+            print(f"Waiting for SQS queue to be ready... ({exc})")
+            time.sleep(3)
+
+
+def render_notification(event):
+    order_id = event.get("order_id")
+    product = event.get("product_name")
+    amount = event.get("amount")
+    status = event.get("status")
+    event_type = event.get("event_type", "order_created")
+
+    if event_type == "payment_completed":
+        print("--- ✉️  PAYMENT STATUS NOTIFICATION ---")
+        print(f"Order: #{order_id}")
+        print(f"Status: {status}")
+        print(f"Product: {product}")
+        print(f"Amount: ${amount}")
+        failure_reason = event.get("failure_reason")
+        if status == "FAILED" and failure_reason:
+            print(f"Reason: {failure_reason}")
+        print("Message: The payment flow has completed.")
+    else:
+        print("--- ✉️  ORDER CREATED NOTIFICATION ---")
+        print(f"Order: #{order_id}")
+        print(f"Product: {product}")
+        print(f"Amount: ${amount}")
+        print("Message: Your order has entered the processing pipeline.")
+
+    print("--------------------------------------")
+
+
 def start_notification_worker():
     print("Notification Service: Initializing...")
     sqs = get_sqs_client()
-    
-    # Ensure the queue exists before trying to read from it
-    while True:
-        try:
-            queue_url = sqs.get_queue_url(QueueName=QUEUE_NAME)["QueueUrl"]
-            break
-        except Exception:
-            print("Waiting for SQS queue to be created by Order Service...")
-            time.sleep(3)
-
+    queue_url = get_queue_url(sqs)
     print(f"Notification Service started. Listening on queue: {queue_url}")
 
     while True:
         try:
-            # Poll for messages from the SQS queue
             response = sqs.receive_message(
                 QueueUrl=queue_url,
                 MaxNumberOfMessages=1,
-                WaitTimeSeconds=5 # Long-polling reduces CPU usage
+                WaitTimeSeconds=5
             )
 
             if "Messages" in response:
                 for message in response["Messages"]:
-                    # Parse the message payload
                     body = json.loads(message["Body"])
-                    order_id = body.get("order_id")
-                    product = body.get("product_name")
-                    amount = body.get("amount")
-
-                    print(f"--- ✉️  SENDING EMAIL NOTIFICATION ---")
-                    print(f"To: customer@payflow.com")
-                    print(f"Subject: Order #{order_id} Received!")
-                    print(f"Body: Thank you for purchasing {product} (${amount}).")
-                    print(f"--------------------------------------")
-
-                    # Crucial: Delete the message from the queue so no one else processes it
+                    render_notification(body)
                     sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=message["ReceiptHandle"])
-            
         except Exception as e:
             print(f"Notification Worker Error: {e}")
             time.sleep(2)
+
 
 if __name__ == "__main__":
     start_notification_worker()

@@ -72,8 +72,22 @@ def startup_event():
             product_name VARCHAR(100) NOT NULL,
             amount DECIMAL NOT NULL,
             status VARCHAR(20) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            failure_reason VARCHAR(100),
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );
+    """)
+    # Cheap forward-migration for anyone re-running this against an existing
+    # database that predates the failure_reason column.
+    cursor.execute("""
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS failure_reason VARCHAR(100);
+    """)
+    # Cheap forward-migration for databases created before created_at was
+    # switched from TIMESTAMP to TIMESTAMPTZ. Safe to run repeatedly - if the
+    # column is already TIMESTAMPTZ this is a no-op.
+    cursor.execute("""
+        ALTER TABLE orders
+        ALTER COLUMN created_at TYPE TIMESTAMPTZ
+        USING created_at AT TIME ZONE 'UTC';
     """)
     conn.commit()
     cursor.close()
@@ -149,15 +163,22 @@ def create_order(order: OrderCreate):
 # These two GET endpoints didn't exist before - there was no way for any
 # client (frontend or otherwise) to read order data back out, only create it.
 @app.get("/orders")
-def list_orders(limit: int = 50):
+def list_orders(limit: int = 50, status: str | None = None):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
-        cursor.execute(
-            "SELECT id, product_name, amount, status, created_at "
-            "FROM orders ORDER BY created_at DESC LIMIT %s;",
-            (limit,)
-        )
+        if status:
+            cursor.execute(
+                "SELECT id, product_name, amount, status, failure_reason, created_at "
+                "FROM orders WHERE status = %s ORDER BY created_at DESC LIMIT %s;",
+                (status.upper(), limit)
+            )
+        else:
+            cursor.execute(
+                "SELECT id, product_name, amount, status, failure_reason, created_at "
+                "FROM orders ORDER BY created_at DESC LIMIT %s;",
+                (limit,)
+            )
         rows = cursor.fetchall()
         return rows
     finally:
@@ -171,7 +192,7 @@ def get_order(order_id: int):
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
         cursor.execute(
-            "SELECT id, product_name, amount, status, created_at "
+            "SELECT id, product_name, amount, status, failure_reason, created_at "
             "FROM orders WHERE id = %s;",
             (order_id,)
         )

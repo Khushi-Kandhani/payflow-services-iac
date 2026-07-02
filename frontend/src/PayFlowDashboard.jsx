@@ -318,6 +318,26 @@ export default function PayFlowDashboard() {
                   {pendingCount > 0 ? `${pendingCount} pending` : "idle"}
                 </span>
               </div>
+              {orders.length > 0 && (
+                <div>
+                  <div style={{ display: "flex", height: "6px", borderRadius: "3px", overflow: "hidden", background: "var(--pf-line)" }}>
+                    {successCount > 0 && (
+                      <div style={{ width: `${(successCount / orders.length) * 100}%`, background: "var(--pf-teal)" }} />
+                    )}
+                    {failedCount > 0 && (
+                      <div style={{ width: `${(failedCount / orders.length) * 100}%`, background: "var(--pf-coral)" }} />
+                    )}
+                    {pendingCount > 0 && (
+                      <div style={{ width: `${(pendingCount / orders.length) * 100}%`, background: "var(--pf-gold)" }} />
+                    )}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: "6px", fontSize: "10.5px" }} className="pf-mono">
+                    <span style={{ color: "var(--pf-teal)" }}>{successCount} success</span>
+                    <span style={{ color: "var(--pf-coral)" }}>{failedCount} failed</span>
+                    <span style={{ color: "var(--pf-gold)" }}>{pendingCount} pending</span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
           <div style={{ background: "var(--pf-panel)", border: "1px solid var(--pf-line)", borderRadius: "14px", padding: "18px" }}>
@@ -345,6 +365,31 @@ export default function PayFlowDashboard() {
           <span>AGE</span>
         </div>
 
+        {connected === null && (
+          <div>
+            {[1, 2, 3].map((i) => (
+              <div
+                key={i}
+                style={{ display: "grid", gridTemplateColumns: "80px 1.1fr 100px 110px 90px", padding: "14px 22px", borderBottom: "1px solid var(--pf-line)", alignItems: "center" }}
+              >
+                {[40, "70%", 60, 80, 50].map((w, idx) => (
+                  <span
+                    key={idx}
+                    style={{
+                      height: "12px",
+                      width: typeof w === "number" ? `${w}px` : w,
+                      borderRadius: "4px",
+                      background: "var(--pf-line)",
+                      opacity: 0.5 + (i % 2) * 0.15,
+                    }}
+                    className="pf-pulse"
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+
         {orders.length === 0 && connected && (
           <div style={{ padding: "28px 22px", textAlign: "center", color: "var(--pf-muted)", fontSize: "13px" }}>
             No orders yet — submit one above to see it flow through the pipeline.
@@ -368,10 +413,17 @@ export default function PayFlowDashboard() {
             >
               <span style={{ color: "var(--pf-muted)" }}>#{o.id}</span>
               <span style={{ fontFamily: "'Inter', sans-serif" }}>{o.product_name}</span>
-              <span>${Number(o.amount).toFixed(2)}</span>
-              <span style={{ display: "flex", alignItems: "center", gap: "8px", color: s.color }}>
-                <span className={s.pulse ? "pf-pulse" : ""} style={{ width: "7px", height: "7px", borderRadius: "50%", background: s.dot, display: "inline-block" }} />
-                {s.label}
+              <span>{Number(o.amount).toLocaleString(undefined, { style: "currency", currency: "USD" })}</span>
+              <span style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: "8px", color: s.color }}>
+                  <span className={s.pulse ? "pf-pulse" : ""} style={{ width: "7px", height: "7px", borderRadius: "50%", background: s.dot, display: "inline-block" }} />
+                  {s.label}
+                </span>
+                {o.status === "FAILED" && o.failure_reason && (
+                  <span style={{ fontSize: "10.5px", color: "var(--pf-muted)", fontFamily: "'Inter', sans-serif" }}>
+                    {o.failure_reason}
+                  </span>
+                )}
               </span>
               <span className="pf-mono" style={{ color: "var(--pf-muted)" }}>{age !== null ? `${age}s ago` : "—"}</span>
             </div>
