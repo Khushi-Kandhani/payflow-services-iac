@@ -13,10 +13,10 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d payflow_db"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U postgres || pg_isready -U postgres -h 127.0.0.1"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   localstack:
     image: localstack/localstack:3.4.0
@@ -45,6 +45,7 @@ services:
       - DB_PASSWORD=password
       - AWS_ENDPOINT_URL=http://localstack:4566
       - AWS_DEFAULT_REGION=us-east-1
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
     depends_on:
       postgres-db:
         condition: service_healthy
@@ -82,6 +83,16 @@ services:
     depends_on:
       localstack:
         condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: payflow_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - order-service
 
 volumes:
   pgdata:
