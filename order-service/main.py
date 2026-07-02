@@ -36,10 +36,23 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
 
 AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-QUEUE_NAME = "order-events"
 
-# Global placeholder for the SQS Queue URL
-QUEUE_URL = None
+# Two queues, two jobs:
+# - ORDER_CREATED_QUEUE: consumed only by payment-service, one message per
+#   order, deleted once picked up. This is what actually *drives* payment
+#   processing - it's a work queue, not a broadcast.
+# - EVENTS_QUEUE: consumed only by notification-service. Every service
+#   publishes here so notifications can log the full order_created ->
+#   payment_completed history. It's an event log, not a trigger.
+# They used to be the same queue, which meant payment-service and
+# notification-service were competing consumers on one queue - each message
+# went to whichever one polled first, so the other silently missed it.
+ORDER_CREATED_QUEUE = "order-created"
+EVENTS_QUEUE = "order-events"
+
+# Global placeholders for the SQS Queue URLs
+ORDER_CREATED_QUEUE_URL = None
+EVENTS_QUEUE_URL = None
 
 def get_db_connection():
     return psycopg2.connect(
@@ -58,7 +71,7 @@ def get_sqs_client():
 # This block runs automatically when the FastAPI server starts up
 @app.on_event("startup")
 def startup_event():
-    global QUEUE_URL
+    global ORDER_CREATED_QUEUE_URL, EVENTS_QUEUE_URL
 
     # NOTE: nothing in this repo previously created the `orders` table -
     # not here, not in terraform, not in a migration. Adding it here so the
@@ -95,14 +108,13 @@ def startup_event():
 
     print("Order Service: Connecting to LocalStack SQS...")
     sqs = get_sqs_client()
-    
+
     # Retry loop to wait for LocalStack container to fully initialize
     for i in range(10):
         try:
-            # Create the queue if it doesn't exist, or grab the URL if it does
-            response = sqs.create_queue(QueueName=QUEUE_NAME)
-            QUEUE_URL = response["QueueUrl"]
-            print(f"Order Service: SQS Queue is ready at {QUEUE_URL}")
+            ORDER_CREATED_QUEUE_URL = sqs.create_queue(QueueName=ORDER_CREATED_QUEUE)["QueueUrl"]
+            EVENTS_QUEUE_URL = sqs.create_queue(QueueName=EVENTS_QUEUE)["QueueUrl"]
+            print(f"Order Service: SQS queues ready ({ORDER_CREATED_QUEUE}, {EVENTS_QUEUE})")
             break
         except Exception as e:
             print(f"Waiting for LocalStack SQS to start... ({e})")
@@ -134,16 +146,16 @@ def create_order(order: OrderCreate):
             "status": status,
         }
         
-        # 3. Publish the event directly to our AWS SQS Queue
-        if QUEUE_URL:
+        # 3. Publish the event to both queues:
+        #    - order-created: wakes up payment-service to actually process this order
+        #    - order-events: logged by notification-service alongside every other event
+        if ORDER_CREATED_QUEUE_URL and EVENTS_QUEUE_URL:
             sqs = get_sqs_client()
-            sqs.send_message(
-                QueueUrl=QUEUE_URL,
-                MessageBody=json.dumps(message_body)
-            )
-            print(f"Order Service: Dispatched event to SQS for Order ID {order_id}")
+            sqs.send_message(QueueUrl=ORDER_CREATED_QUEUE_URL, MessageBody=json.dumps(message_body))
+            sqs.send_message(QueueUrl=EVENTS_QUEUE_URL, MessageBody=json.dumps(message_body))
+            print(f"Order Service: Dispatched order_created event for Order ID {order_id}")
         else:
-            print("Warning: SQS Queue URL not initialized. Message not sent.")
+            print("Warning: SQS queues not initialized. Message not sent.")
 
         return {
             "order_id": order_id,
