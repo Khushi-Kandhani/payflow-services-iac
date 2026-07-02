@@ -1,12 +1,17 @@
 import os
 import time
 import random
+import json
+import boto3
 import psycopg2
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "payflow_db")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+QUEUE_NAME = "order-events"
 
 def get_db_connection():
     while True:
@@ -19,43 +24,81 @@ def get_db_connection():
             print("Payment Service: Database not ready, retrying in 2 seconds...")
             time.sleep(2)
 
+
+def get_sqs_client():
+    return boto3.client(
+        "sqs",
+        endpoint_url=AWS_ENDPOINT_URL,
+        region_name=AWS_REGION,
+        aws_access_key_id="mock",
+        aws_secret_access_key="mock"
+    )
+
+
+def get_queue_url(sqs):
+    while True:
+        try:
+            response = sqs.get_queue_url(QueueName=QUEUE_NAME)
+            return response["QueueUrl"]
+        except Exception as exc:
+            print(f"Payment Service: Waiting for LocalStack SQS... ({exc})")
+            time.sleep(3)
+
+
+FAILURE_REASONS = [
+    "Card declined by issuer",
+    "Insufficient funds",
+    "Payment gateway timeout",
+    "Fraud check flagged transaction",
+    "Card expired",
+]
+
+
 def process_payments():
     print("Payment Worker started successfully. Scanning for PENDING orders...")
     conn = get_db_connection()
-    
+    sqs = get_sqs_client()
+    queue_url = get_queue_url(sqs)
+
     while True:
         try:
             cursor = conn.cursor()
-            # Fetch one pending order
             cursor.execute(
-                "SELECT id, amount FROM orders WHERE status = 'PENDING' LIMIT 1 FOR UPDATE SKIP LOCKED;"
+                "SELECT id, amount, product_name FROM orders WHERE status = 'PENDING' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED;"
             )
             order = cursor.fetchone()
-            
+
             if order:
-                order_id, amount = order
+                order_id, amount, product_name = order
                 print(f"Processing payment for Order ID {order_id} (Amount: ${amount})...")
-                
-                # Simulate a network delay to an external payment gateway (Stripe/PayPal)
                 time.sleep(3)
-                
-                # 70% Success / 30% Failure logic
-                new_status = "SUCCESS" if random.random() > 0.3 else "FAILED"
-                
-                # Update order status
+                succeeded = random.random() > 0.3
+                new_status = "SUCCESS" if succeeded else "FAILED"
+                failure_reason = None if succeeded else random.choice(FAILURE_REASONS)
                 cursor.execute(
-                    "UPDATE orders SET status = %s WHERE id = %s;",
-                    (new_status, order_id)
+                    "UPDATE orders SET status = %s, failure_reason = %s WHERE id = %s;",
+                    (new_status, failure_reason, order_id)
                 )
                 conn.commit()
-                print(f"Order ID {order_id} payment result: {new_status}")
-            
+
+                event_payload = {
+                    "event_type": "payment_completed",
+                    "order_id": order_id,
+                    "product_name": product_name,
+                    "amount": float(amount),
+                    "status": new_status,
+                    "failure_reason": failure_reason,
+                }
+                sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(event_payload))
+                print(f"Order ID {order_id} payment result: {new_status} — event pushed to SQS")
+
             cursor.close()
         except Exception as e:
             print(f"Error in execution loop: {e}")
-            conn = get_db_connection() # Reconnect if connection dropped
-            
-        time.sleep(2) # Sleep for 2 seconds before checking for new orders again
+            conn = get_db_connection()
+
+        time.sleep(2)
+
 
 if __name__ == "__main__":
     process_payments()
