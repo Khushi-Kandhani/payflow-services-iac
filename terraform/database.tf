@@ -26,7 +26,7 @@ resource "aws_db_subnet_group" "db_subnet_group" {
   subnet_ids = module.vpc.private_subnets
 }
 
-# The managed PostgreSQL instance (Rectified for Perfect 10 Security)
+# The managed PostgreSQL instance
 resource "aws_db_instance" "postgres" {
   identifier             = "payflow-db-production"
   allocated_storage      = 20
